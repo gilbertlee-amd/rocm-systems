@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <strings.h>
 #include <vector>
 
@@ -69,7 +70,8 @@ static void printUsage(const char* prog) {
           "                   AllToAll:  count to each peer (buffers = count * nranks)\n"
           "                 (default 33554432: 128 MiB floats per AllReduce send or AllGather send;\n"
           "                  AllToAll send buffer is count*nranks floats)\n"
-          "  -b <bins>      Histogram bins on rank 0 (default 40)\n"
+          "  -b <rows>      Max printed histogram rows when range is wide (default 20000);\n"
+          "                 bins are fixed 0.01 ms on a global grid for cross-run comparison.\n"
           "  --csv          Print one sample per line (ms) on rank 0 after histogram\n"
           "  -h             Help\n"
           "\nExample with blackout:\n"
@@ -107,11 +109,12 @@ static size_t bufferElements(CollOp op, size_t count) {
   return count * (size_t)mpiSize;
 }
 
-static void printHistogram(const std::vector<double>& ms, int bins, bool csvDump) {
+static void printHistogram(const std::vector<double>& ms, int maxHistRows, bool csvDump) {
   if (ms.empty()) {
     printf("No samples.\n");
     return;
   }
+  constexpr double kBinWidthMs = 0.01;
   const size_t n = ms.size();
   double mn = *std::min_element(ms.begin(), ms.end());
   double mx = *std::max_element(ms.begin(), ms.end());
@@ -141,27 +144,77 @@ static void printHistogram(const std::vector<double>& ms, int bins, bool csvDump
   printf("p50=%.6g  p90=%.6g  p95=%.6g  p99=%.6g  p99.9=%.6g\n", pct(50.0), pct(90.0), pct(95.0), pct(99.0),
          pct(99.9));
 
-  if (bins < 2) bins = 2;
-  if (mx <= mn) mx = mn + 1e-12;
-  std::vector<int> hist((size_t)bins, 0);
-  for (double t : ms) {
-    int b = (int)((t - mn) / (mx - mn) * (double)bins);
-    if (b < 0) b = 0;
-    if (b >= bins) b = bins - 1;
-    hist[(size_t)b]++;
-  }
-  int hmax = 1;
-  for (int c : hist) hmax = std::max(hmax, c);
+  if (maxHistRows < 8) maxHistRows = 8;
 
-  printf("\n--- Histogram (%d bins, width=%.6g ms) ---\n", bins, (mx - mn) / (double)bins);
-  const int barW = 50;
-  for (int i = 0; i < bins; i++) {
-    double lo = mn + (mx - mn) * (double)i / (double)bins;
-    double hi = mn + (mx - mn) * (double)(i + 1) / (double)bins;
-    int len = (int)std::llround((double)hist[(size_t)i] / (double)hmax * (double)barW);
-    printf("[%6.4g,%6.4g) %6d |", lo, hi, hist[(size_t)i]);
-    for (int j = 0; j < len; j++) putchar('*');
-    putchar('\n');
+  /* Global 0.01 ms grid: bin index k = floor(t / 0.01) covers [k*0.01, (k+1)*0.01) ms. */
+  const long long kMin = (long long)std::floor(mn / kBinWidthMs);
+  const long long kMax = (long long)std::floor(mx / kBinWidthMs);
+  const unsigned long long span = (unsigned long long)(kMax - kMin) + 1ULL;
+
+  std::map<long long, int> sparse;
+  for (double t : ms) {
+    long long k = (long long)std::floor(t / kBinWidthMs);
+    sparse[k]++;
+  }
+
+  printf("\n--- Histogram: fixed bin width %.2g ms (global grid); density = count/(N*%.2g) [1/ms] ---\n",
+         kBinWidthMs, kBinWidthMs);
+  printf("bin_lo_ms bin_hi_ms count density rel_bar\n");
+
+  const unsigned long long kDenseMax = 500000ULL;
+  double maxDensity = 0.0;
+
+  auto density = [&](int c) { return (double)c / ((double)n * kBinWidthMs); };
+
+  if (span <= kDenseMax) {
+    std::vector<int> hist((size_t)span, 0);
+    for (const auto& kv : sparse) {
+      if (kv.first < kMin || kv.first > kMax) continue;
+      hist[(size_t)(kv.first - kMin)] = kv.second;
+    }
+    for (size_t i = 0; i < hist.size(); i++) maxDensity = std::max(maxDensity, density(hist[i]));
+    if (maxDensity <= 0.0) maxDensity = 1.0;
+
+    const int barW = 50;
+    if ((long long)span > maxHistRows) {
+      fprintf(stderr,
+              "[mpi_blackout_hist] %llu bins exceed -b=%d; printing contiguous bins with chunk markers (0.01 ms grid).\n",
+              (unsigned long long)span, maxHistRows);
+    }
+    for (long long k = kMin; k <= kMax; k++) {
+      int c = hist[(size_t)(k - kMin)];
+      double lo = (double)k * kBinWidthMs;
+      double hi = (double)(k + 1) * kBinWidthMs;
+      double den = density(c);
+      int len = (int)std::llround(den / maxDensity * (double)barW);
+      printf("%.4f %.4f %d %.6g |", lo, hi, c, den);
+      for (int j = 0; j < len; j++) putchar('*');
+      putchar('\n');
+      if ((long long)span > maxHistRows && (k - kMin + 1) % maxHistRows == 0 && k < kMax) printf("--- chunk break ---\n");
+    }
+  } else {
+    fprintf(stderr,
+            "[mpi_blackout_hist] Span %llu bins (> %llu); printing **non-zero** bins only (same 0.01 ms grid).\n",
+            (unsigned long long)span, kDenseMax);
+    for (const auto& kv : sparse) maxDensity = std::max(maxDensity, density(kv.second));
+    if (maxDensity <= 0.0) maxDensity = 1.0;
+    const int barW = 50;
+    int row = 0;
+    for (const auto& kv : sparse) {
+      long long k = kv.first;
+      int c = kv.second;
+      double lo = (double)k * kBinWidthMs;
+      double hi = (double)(k + 1) * kBinWidthMs;
+      double den = density(c);
+      int len = (int)std::llround(den / maxDensity * (double)barW);
+      printf("%.4f %.4f %d %.6g |", lo, hi, c, den);
+      for (int j = 0; j < len; j++) putchar('*');
+      putchar('\n');
+      if (++row >= maxHistRows) {
+        fprintf(stderr, "[mpi_blackout_hist] Truncated non-zero bin listing at -b=%d rows.\n", maxHistRows);
+        break;
+      }
+    }
   }
 
   if (csvDump) {
@@ -181,7 +234,7 @@ int main(int argc, char** argv) {
   int warmup = 50;
   /* Default: 128 MiB as float32 (128*1024*1024 / 4) for AllReduce send; AllGather/AllToAll use same -e semantics. */
   size_t count = (size_t)128 * 1024 * 1024 / sizeof(float);
-  int histBins = 40;
+  int histBins = 20000;
   bool csvDump = false;
 
   for (int i = 1; i < argc; i++) {
