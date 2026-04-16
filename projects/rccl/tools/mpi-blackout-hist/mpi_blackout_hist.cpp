@@ -76,7 +76,7 @@ static void printUsage(const char* prog) {
           "  -h             Help\n"
           "\nExample with blackout:\n"
           "  RCCL_IB_BLACKOUT_ENABLE=1 RCCL_IB_BLACKOUT_MEAN_INTERVAL_MS=200 \\\n"
-          "  RCCL_IB_BLACKOUT_DURATION_MS=4 RCCL_IB_BLACKOUT_SEED=42 \\\n"
+          "  RCCL_IB_BLACKOUT_DURATION_US=4 RCCL_IB_BLACKOUT_SEED=42 \\\n"
           "  mpirun -np 8 %s -T 120 -e 262144\n",
           prog, prog);
 }

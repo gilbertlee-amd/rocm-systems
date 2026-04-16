@@ -3,7 +3,7 @@
  *
  * Per-physical-NIC software blackout: blocks post_send, post_recv, and
  * poll_cq until a monotonic deadline. Inter-blackout intervals are
- * exponential; blackout length is fixed (RCCL_IB_BLACKOUT_DURATION_MS).
+ * exponential; blackout length is fixed (RCCL_IB_BLACKOUT_DURATION_US).
  ************************************************************************/
 
 #include "ib_blackout.h"
@@ -13,17 +13,20 @@
 #include <pthread.h>
 #include <sched.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <mutex>
 #include <random>
 
 RCCL_PARAM(IbBlackoutEnable, "IB_BLACKOUT_ENABLE", 0);
 RCCL_PARAM(IbBlackoutMeanIntervalMs, "IB_BLACKOUT_MEAN_INTERVAL_MS", 450000);
-RCCL_PARAM(IbBlackoutDurationMs, "IB_BLACKOUT_DURATION_MS", 4);
+RCCL_PARAM(IbBlackoutDurationUs, "IB_BLACKOUT_DURATION_US", 4);
 RCCL_PARAM(IbBlackoutSeed, "IB_BLACKOUT_SEED", 1);
+RCCL_PARAM(IbBlackoutDeterministic, "IB_BLACKOUT_DETERMINISTIC", 0);
 
 struct BlackoutSlot {
   std::atomic<uint64_t> blackoutEndNs{0};
@@ -40,6 +43,49 @@ static uint64_t nowMonotonicNs() {
   struct timespec ts;
   if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
   return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+static uint64_t readDevUrandom64() {
+  uint64_t x = 0;
+  FILE* f = fopen("/dev/urandom", "rb");
+  if (f) {
+    if (fread(&x, sizeof(x), 1, f) != 1) x = 0;
+    fclose(f);
+  }
+  return x;
+}
+
+static uint64_t hashHostname() {
+  char buf[256];
+  if (gethostname(buf, sizeof(buf)) != 0) return 0;
+  uint64_t h = 14695981039346656037ULL;
+  for (const char* p = buf; *p; ++p) {
+    h ^= (uint64_t)(unsigned char)*p;
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
+static uint64_t makeBlackoutRngSeed(int lane, int devIndex) {
+  uint64_t s = (uint64_t)rcclParamIbBlackoutSeed();
+  s ^= (uint64_t)lane * 0x9e3779b97f4a7c15ULL;
+  s ^= (uint64_t)devIndex * 0x85ebca6bUL;
+  if (rcclParamIbBlackoutDeterministic()) {
+    return s ? s : 1;
+  }
+
+  struct timespec ts;
+  if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+    ts.tv_sec = 0;
+    ts.tv_nsec = 0;
+  }
+  s ^= readDevUrandom64();
+  s ^= (uint64_t)getpid() * 0xc6a4a7935bd1e995ULL;
+  s ^= (uint64_t)getppid() * 0x94d049bb133111ebULL;
+  s ^= (uint64_t)(uintptr_t)pthread_self();
+  s ^= (((uint64_t)(uint32_t)ts.tv_nsec) << 32) ^ (uint64_t)(uint32_t)ts.tv_sec;
+  s ^= hashHostname();
+  return s ? s : 1;
 }
 
 static void sleepNsInterruptible(uint64_t ns, std::atomic<int>* stop) {
@@ -60,14 +106,11 @@ static void* blackoutThreadMain(void* arg) {
   int devIndex = (int)(packed & 0xffff);
 
   const int64_t meanMs = rcclParamIbBlackoutMeanIntervalMs();
-  const int64_t durMs = rcclParamIbBlackoutDurationMs();
+  const int64_t durUs = rcclParamIbBlackoutDurationUs();
   const double mean = (double)(meanMs < 1 ? 1 : meanMs);
-  const uint64_t durNs = (uint64_t)(durMs < 0 ? 0 : durMs) * 1000000ULL;
+  const uint64_t durNs = (uint64_t)(durUs < 0 ? 0 : durUs) * 1000ULL;
 
-  uint64_t seed = (uint64_t)rcclParamIbBlackoutSeed();
-  seed ^= (uint64_t)lane * 0x9e3779b97f4a7c15ULL;
-  seed ^= (uint64_t)devIndex * 0x85ebca6bUL;
-  std::mt19937_64 gen(seed);
+  std::mt19937_64 gen(makeBlackoutRngSeed(lane, devIndex));
   std::exponential_distribution<double> dist(1.0 / mean);
 
   BlackoutSlot* slot = &g_slots[lane][devIndex];
@@ -104,10 +147,11 @@ void ncclIbBlackoutLaneDevInit(int lane, int ibDevIndex) {
 
   std::call_once(g_loggedOnce, []() {
     INFO(NCCL_INIT | NCCL_NET,
-         "NET/IB: RCCL_IB_BLACKOUT_ENABLE=1 (mean interval %lld ms, duration %lld ms, seed %lld)",
+         "NET/IB: RCCL_IB_BLACKOUT_ENABLE=1 (mean interval %lld ms, duration %lld us, seed %lld, deterministic=%lld)",
          (long long)rcclParamIbBlackoutMeanIntervalMs(),
-         (long long)rcclParamIbBlackoutDurationMs(),
-         (long long)rcclParamIbBlackoutSeed());
+         (long long)rcclParamIbBlackoutDurationUs(),
+         (long long)rcclParamIbBlackoutSeed(),
+         (long long)rcclParamIbBlackoutDeterministic());
   });
 
   slot->shutdown.store(0, std::memory_order_relaxed);
