@@ -140,9 +140,9 @@ static void printHistogram(const std::vector<double>& ms, int maxHistRows, bool 
   double sd = std::sqrt(var);
 
   printf("\n--- Timing (ms), N=%zu samples (all ranks) ---\n", n);
-  printf("min=%.6g  max=%.6g  mean=%.6g  stddev=%.6g\n", mn, mx, mean, sd);
-  printf("p50=%.6g  p90=%.6g  p95=%.6g  p99=%.6g  p99.9=%.6g\n", pct(50.0), pct(90.0), pct(95.0), pct(99.0),
-         pct(99.9));
+  printf("min  =%.6g\navg  =%.6g\nmax  =%.6g\nstdev=%.6g\n", mn, mean, mx, sd);
+  printf("p50  =%.6g\np90  =%.6g\np95  =%.6g\np99  =%.6g\np99.9=%.6g\n",
+         pct(50.0), pct(90.0), pct(95.0), pct(99.0), pct(99.9));
 
   if (maxHistRows < 8) maxHistRows = 8;
 
