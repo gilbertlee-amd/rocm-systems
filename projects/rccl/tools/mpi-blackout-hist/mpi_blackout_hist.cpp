@@ -97,7 +97,7 @@ static void runCollective(CollOp op, float* send, float* recv, size_t count, ncc
     NCCLCHK(ncclAllGather(send, recv, count, ncclFloat, comm, stream));
     break;
   case CollOp::AllToAll:
-    NCCLCHK(ncclAlltoAll(send, recv, count, ncclFloat, comm, stream));
+    NCCLCHK(ncclAllToAll(send, recv, count, ncclFloat, comm, stream));
     break;
   }
 }
