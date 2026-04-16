@@ -18,8 +18,8 @@
 #include <strings.h>
 #include <vector>
 
-#include <hip/hip_runtime.h>
-#include <rccl/rccl.h>
+#include "hip/hip_runtime.h"
+#include "rccl/rccl.h"
 
 #define NCCLCHK(cmd)                                                                                                   \
   do {                                                                                                                 \

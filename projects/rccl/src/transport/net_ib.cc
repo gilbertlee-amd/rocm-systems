@@ -166,12 +166,12 @@ static void ncclIbCqFatalError(struct ibv_cq* cq) {
 }
 // Calculate number of QPs based on P2P flag and device counts
 static int ncclIbCalculateNqps(int isP2p, int localNdevs, int remoteNdevs, const char* funcName) {
-  auto qp_multiplier = (rcclParamIbQpsPerP2p() > 0 && isP2p) ? 
+  auto qp_multiplier = (rcclParamIbQpsPerP2p() > 0 && isP2p) ?
                        rcclParamIbQpsPerP2p() : ncclParamIbQpsPerConn();
   int localNqps = qp_multiplier * localNdevs;
   int remoteNqps = qp_multiplier * remoteNdevs;
   int maxNqps = (remoteNqps > localNqps) ? remoteNqps : localNqps;
-  INFO(NCCL_NET, "NET/IB: %s Max Nqps=%d, localNqps=%d, remoteNqps=%d", 
+  INFO(NCCL_NET, "NET/IB: %s Max Nqps=%d, localNqps=%d, remoteNqps=%d",
        funcName, maxNqps, localNqps, remoteNqps);
   return maxNqps;
 }
@@ -497,7 +497,7 @@ static int ncclIbMatchVfPath(char* path1, char* path2) {
 }
 
 /**
- * Assumes PCIe path ends with xxxx:xx:xx.x 
+ * Assumes PCIe path ends with xxxx:xx:xx.x
  */
 static void ncclIbNormalizePciPath(const char* in, char* out, size_t out_size) {
   if (!in || !out || out_size == 0) return;
@@ -677,7 +677,7 @@ static int ncclIbGetNumaNodeFromPath(const char* pciPath) {
     }
     char numaPath[PATH_MAX];
     if (snprintf(numaPath, sizeof(numaPath), "%s/numa_node", pciPath) >= PATH_MAX) {
-        return -1; 
+        return -1;
     }
 
     int fd = open(numaPath, O_RDONLY);
@@ -689,7 +689,7 @@ static int ncclIbGetNumaNodeFromPath(const char* pciPath) {
 
     if (n <= 0) return -1;
     buf[n] = '\0';
-    
+
     char* endptr;
     errno = 0;
     long numa = strtol(buf, &endptr, 10);
@@ -753,8 +753,8 @@ ncclResult_t ncclIbMakeVDeviceInternal(int* d, ncclNetVDeviceProps_t* props) {
   }
 
   int numa0 = ncclIbGetNumaNodeFromPath(dev0->pciPath);
-  //format -> 0000:00 
-  char root0[8]; 
+  //format -> 0000:00
+  char root0[8];
   ncclIbGetPciRootFromPath(dev0->pciPath, root0, sizeof(root0));
   for (int i = 1; i < tmp.vProps.ndevs; i++) {
     const ncclIbDev* dev = ncclIbDevs + tmp.vProps.devs[i];
@@ -821,7 +821,7 @@ ncclResult_t ncclIbInit(void** ctx, uint64_t commId, ncclNetCommConfig_t* config
         WARN("NET/IB : No IP interface found.");
         ret = ncclInternalError;
         goto fail;
-      }   
+      }
 
       // Check if user defined which IB device:port to use
       const char* userIbEnv = ncclGetEnv("NCCL_IB_HCA");
@@ -962,7 +962,7 @@ ncclResult_t ncclIbInit(void** ctx, uint64_t commId, ncclNetCommConfig_t* config
       ncclNetVDeviceProps_t vProps = {0};
       vProps.ndevs = 1;
       vProps.devs[0] = d;
-      NCCLCHECK(ncclIbMakeVDeviceInternal(&vDev, &vProps)); 
+      NCCLCHECK(ncclIbMakeVDeviceInternal(&vDev, &vProps));
     }
     char addrline[SOCKET_NAME_MAXLEN+1];
     INFO(NCCL_INIT|NCCL_NET, "NET/IB : Using%s %s; OOB %s:%s", line, ncclIbRelaxedOrderingEnabled ? "[RO]" : "",
@@ -1432,7 +1432,7 @@ ncclResult_t ncclIbInitCommDevBase(int ibDevN, struct ncclIbNetCommDevBase* base
   }
 
   // CQ is sized to accommodate the max SQ + RQ WQE completions. If each SQ WQE could be signaled, then,
-  // for each QP, there can be 2*MAX_REQUESTS completions for SQ and MAX_REQUESTS completions for RQ. 
+  // for each QP, there can be 2*MAX_REQUESTS completions for SQ and MAX_REQUESTS completions for RQ.
   NCCLCHECK(wrap_ibv_create_cq(&base->cq, ibDev->context, 3*MAX_REQUESTS*ncclParamIbQpsPerConn(), cq_context, NULL, 0));
 
   return ncclSuccess;
@@ -1561,7 +1561,7 @@ ncclResult_t ncclIbConnect(void* ctx, int dev, void* opaqueHandle, void** sendCo
   struct ncclIbSendComm* comm = (struct ncclIbSendComm*)stage->comm;
   int ready;
   uint8_t link_layer = IBV_LINK_LAYER_UNSPECIFIED;
-  int isP2p = 0; 
+  int isP2p = 0;
   *sendComm = NULL;
 
   if (stage->state == ncclIbCommStateConnect)      goto ib_connect_check;
@@ -1625,7 +1625,7 @@ ib_recv_dev_list:
   // Read isP2p from handle
   isP2p = handle->isP2p;
   INFO(NCCL_NET, "NET/IB: ncclIbConnect isP2p=%d", isP2p);
-  comm->base.nqps = ncclIbCalculateNqps(isP2p, comm->base.vProps.ndevs, 
+  comm->base.nqps = ncclIbCalculateNqps(isP2p, comm->base.vProps.ndevs,
                                          remoteVProps.ndevs, __func__);
 
   // Init PD, Ctx for each IB device
@@ -1951,7 +1951,7 @@ ib_recv:
 
   mergedDev = ncclIbMergedDevs + lComm->dev;
   rComm->base.nRemDevs = remMeta.ndevs;
-  rComm->base.nqps = ncclIbCalculateNqps(remMeta.isP2p, rComm->base.vProps.ndevs, 
+  rComm->base.nqps = ncclIbCalculateNqps(remMeta.isP2p, rComm->base.vProps.ndevs,
                                           remMeta.ndevs, __func__);
   if (rComm->base.nRemDevs != rComm->base.vProps.ndevs) {
     INFO(NCCL_NET, "NET/IB : Local mergedDev %s has a different number of devices=%d as remote %s %d",
@@ -2059,7 +2059,7 @@ ib_recv:
   }
 
   rComm->flushEnabled = ((peermemAvailable || useDmaBuf)
-                            && (ncclParamIbGdrFlushDisable() == 0)) ? 1 : 0;              
+                            && (ncclParamIbGdrFlushDisable() == 0)) ? 1 : 0;
   for (int i = 0; i < rComm->base.vProps.ndevs; i++) {
     rCommDev = rComm->devs + i;
     ibDev = ncclIbDevs + rCommDev->base.ibDevN;
@@ -3168,3 +3168,13 @@ ncclNet_t ncclNetIb = {
   ncclIbSetProperties,
   ncclIbRefreshDevices
 */
+
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+// When rocmIb.cmake is disabled for development, these symbols are still
+// referenced by net.cc and plugin/net.cc under __HIP_PLATFORM_AMD__ guards.
+// Alias them to the ncclIb equivalents so the build links and runs.
+ncclNet_t rocmNetIb = ncclNetIb;
+ncclResult_t rcclRocmNetP2pPolicy(void* handle, int isP2p) {
+  return rcclNetP2pPolicy(handle, isP2p);
+}
+#endif
