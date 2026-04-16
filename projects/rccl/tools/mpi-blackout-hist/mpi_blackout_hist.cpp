@@ -158,8 +158,8 @@ static void printHistogram(const std::vector<double>& ms, int maxHistRows, bool 
   }
 
   printf("\n--- Histogram: fixed bin width %.2f ms (global grid) ---\n", kBinWidthMs);
-  /* Fixed widths: 12 chars + 12 chars + 12 chars + " |" so bars start at column 39 (1-based). */
-  printf("%12s %12s %12s |\n", "bin_lo_ms", "bin_hi_ms", "count");
+  /* 12+1+12+1+12+1+7+2 chars before '*' column (pct = %% of all samples in bin). */
+  printf("%12s %12s %12s %7s |\n", "bin_lo_ms", "bin_hi_ms", "count", "pct");
 
   const unsigned long long kDenseMax = 500000ULL;
 
@@ -182,12 +182,13 @@ static void printHistogram(const std::vector<double>& ms, int maxHistRows, bool 
       int c = hist[(size_t)(k - kMin)];
       double lo = (double)k * kBinWidthMs;
       double hi = (double)(k + 1) * kBinWidthMs;
+      double pct = 100.0 * (double)c / (double)n;
       int len = (int)std::llround((double)c / (double)maxCount * (double)barW);
-      printf("%12.2f %12.2f %12d |", lo, hi, c);
+      printf("%12.2f %12.2f %12d %7.2f |", lo, hi, c, pct);
       for (int j = 0; j < len; j++) putchar('*');
       putchar('\n');
       if ((long long)span > maxHistRows && (k - kMin + 1) % maxHistRows == 0 && k < kMax)
-        printf("%-40s|\n", "--- chunk break ---");
+        printf("%-48s|\n", "--- chunk break ---");
     }
   } else {
     fprintf(stderr,
@@ -202,8 +203,9 @@ static void printHistogram(const std::vector<double>& ms, int maxHistRows, bool 
       int c = kv.second;
       double lo = (double)k * kBinWidthMs;
       double hi = (double)(k + 1) * kBinWidthMs;
+      double pct = 100.0 * (double)c / (double)n;
       int len = (int)std::llround((double)c / (double)maxCount * (double)barW);
-      printf("%12.2f %12.2f %12d |", lo, hi, c);
+      printf("%12.2f %12.2f %12d %7.2f |", lo, hi, c, pct);
       for (int j = 0; j < len; j++) putchar('*');
       putchar('\n');
       if (++row >= maxHistRows) {
