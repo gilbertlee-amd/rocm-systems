@@ -94,6 +94,7 @@ set(SRC_FILES
   src/include/graph.h
   src/include/group.h
   src/include/hip_rocm_version_info.h
+  src/include/ib_blackout.h
   src/include/ibvcore.h
   src/include/ibvsymbols.h
   src/include/ibvwrap.h
@@ -224,9 +225,9 @@ set(SRC_FILES
   src/misc/api_trace.cc
 # src/misc/cudawrap.cc
 # src/misc/gdrwrap.cc
+  src/misc/ib_blackout.cc
   src/misc/ibvsymbols.cc
   src/misc/ibvwrap.cc
-  src/misc/ib_blackout.cc
   src/misc/ipcsocket.cc
   src/misc/mlx5dvsymbols.cc
   src/misc/mlx5dvwrap.cc
@@ -374,7 +375,7 @@ add_custom_target(hipify_all DEPENDS ${HIP_SOURCES})
 
 # Add the generated net_ib_rocm.cc file (created by rocmIb.cmake in the staging area)
 # This file is patched and transformed directly into HIPIFY_DIR, bypassing the hipify step
-list(APPEND HIP_SOURCES "${HIPIFY_DIR}/src/transport/net_ib_rocm.cc")
+#list(APPEND HIP_SOURCES "${HIPIFY_DIR}/src/transport/net_ib_rocm.cc")
 
 # Generate device/host tables and all the collective functions that are going to be in librccl.so
 #==================================================================================================
