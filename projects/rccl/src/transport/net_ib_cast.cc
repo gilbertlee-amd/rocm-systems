@@ -31,6 +31,7 @@
 #include <sys/utsname.h>
 
 #include "ibvwrap.h"
+#include "ib_blackout.h"
 #include "mlx5/mlx5dvwrap.h"
 #include "ionic/ionicdvwrap.h"
 #include "graph/xml.h"
@@ -1230,6 +1231,7 @@ ncclResult_t IbCastInit(void** ctx, uint64_t commId, ncclNetCommConfig_t* config
               PTHREADCHECKGOTO(pthread_create(&IbCastAsyncThread, NULL, IbCastAsyncThreadMain, IbCastDevs + ncclNIbDevs), "pthread_create", ret, fail);
               ncclSetThreadName(IbCastAsyncThread, "NCCL IbAsync %2d", ncclNIbDevs);
               PTHREADCHECKGOTO(pthread_detach(IbCastAsyncThread), "pthread_detach", ret, fail); // will not be pthread_join()'d
+              ncclIbBlackoutLaneDevInit(NCCL_IB_BLACKOUT_LANE_CAST, ncclNIbDevs);
 
               // Add this plain physical device to the list of virtual devices
               int vDev;
@@ -3093,6 +3095,7 @@ static ncclResult_t IbCastMultiSend(struct ncclIbSendComm* comm, int slot, int n
       reqs[r]->pInfo[0].nEventHandles++;
     }
 #endif
+    ncclIbBlackoutLaneWait(NCCL_IB_BLACKOUT_LANE_CAST, comm->devs[qp->devIndex].base.ibDevN);
     NCCLCHECK(wrap_ibv_post_send(qp->qp, comm->wrs, &bad_wr));
 
     for (int r=0; r<nreqs; r++) {
@@ -3439,6 +3442,7 @@ ncclResult_t IbCastPostFifo(struct ncclIbRecvComm* comm, int n, void** data, siz
   }
 
   struct ibv_send_wr* bad_wr;
+  ncclIbBlackoutLaneWait(NCCL_IB_BLACKOUT_LANE_CAST, comm->devs[ctsQp->devIndex].base.ibDevN);
   NCCLCHECK(wrap_ibv_post_send(ctsQp->qp, &wr, &bad_wr));
 
   TRACE(NCCL_VERBS, "Posted send wr_id=%lu, wr_indx=%d, qp_num=%d, src_nic=%d, dst_nic=%d, dlid=%lu, opcode=%d, send_flags=%d, imm_data=%d, remote_addr=%lx, rkey=%x, length=%d, lkey=%x",
@@ -3504,6 +3508,7 @@ ncclResult_t IbCastIrecv(void* recvComm, int n, void** data, size_t* sizes, int*
       IbCastAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base, false);
       if (comm->base.rxPosts[curQpIndex] < MAX_REQUESTS) {
         wr.wr_id = curQpIndex;
+        ncclIbBlackoutLaneWait(NCCL_IB_BLACKOUT_LANE_CAST, comm->devs[qp->devIndex].base.ibDevN);
         NCCLCHECK(wrap_ibv_post_recv(qp->qp, &wr, &bad_wr));
         comm->base.rxPosts[curQpIndex]++;
       }
@@ -3572,6 +3577,7 @@ ncclResult_t IbCastIflush(void* recvComm, int n, void** data, int* sizes, void**
       wr.opcode = IBV_WR_RDMA_WRITE;
       wr.send_flags = 0;
       struct ibv_send_wr* bad_wr;
+      ncclIbBlackoutLaneWait(NCCL_IB_BLACKOUT_LANE_CAST, comm->devs[i].base.ibDevN);
       NCCLCHECK(wrap_ibv_post_send(comm->devs[i].gpuFlush.qp.qp, &wr, &bad_wr));
     }
     memset(&wr, 0, sizeof(wr));
@@ -3590,6 +3596,7 @@ ncclResult_t IbCastIflush(void* recvComm, int n, void** data, int* sizes, void**
 
     TIME_START(4);
     struct ibv_send_wr* bad_wr;
+    ncclIbBlackoutLaneWait(NCCL_IB_BLACKOUT_LANE_CAST, comm->devs[i].base.ibDevN);
     NCCLCHECK(wrap_ibv_post_send(comm->devs[i].gpuFlush.qp.qp, &wr, &bad_wr));
     TIME_STOP(4);
 
@@ -3657,6 +3664,7 @@ ncclResult_t IbCastTest(void* request, int* done, int* sizes) {
       TIME_START(3);
       // If we expect any completions from this device's CQ
       if (r->events[i]) {
+        ncclIbBlackoutLaneWait(NCCL_IB_BLACKOUT_LANE_CAST, r->devBases[i]->ibDevN);
         NCCLCHECK(wrap_ibv_poll_cq(r->devBases[i]->cq, cqMaxPollEvent,
                                    wcs, &wrDone));
         totalWrDone += wrDone;
@@ -3843,6 +3851,7 @@ ncclResult_t IbCastCloseListen(void* listenComm) {
 
 ncclResult_t IbCastFinalize(void* ctx) {
   netRefCount--;
+  if (netRefCount == 0) ncclIbBlackoutLaneStop(NCCL_IB_BLACKOUT_LANE_CAST);
   return ncclSuccess;
 }
 

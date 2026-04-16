@@ -226,6 +226,7 @@ set(SRC_FILES
 # src/misc/gdrwrap.cc
   src/misc/ibvsymbols.cc
   src/misc/ibvwrap.cc
+  src/misc/ib_blackout.cc
   src/misc/ipcsocket.cc
   src/misc/mlx5dvsymbols.cc
   src/misc/mlx5dvwrap.cc

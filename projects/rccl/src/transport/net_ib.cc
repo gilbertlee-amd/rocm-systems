@@ -28,6 +28,7 @@
 #include <sys/utsname.h>
 
 #include "ibvwrap.h"
+#include "ib_blackout.h"
 #include "mlx5/mlx5dvwrap.h"
 #include "graph/xml.h"
 
@@ -934,6 +935,7 @@ ncclResult_t ncclIbInit(void** ctx, uint64_t commId, ncclNetCommConfig_t* config
               PTHREADCHECKGOTO(pthread_create(&ncclIbAsyncThread, NULL, ncclIbAsyncThreadMain, ncclIbDevs + ncclNIbDevs), "pthread_create", ret, fail);
               ncclSetThreadName(ncclIbAsyncThread, "NCCL IbAsync %2d", ncclNIbDevs);
               PTHREADCHECKGOTO(pthread_detach(ncclIbAsyncThread), "pthread_detach", ret, fail); // will not be pthread_join()'d
+              ncclIbBlackoutLaneDevInit(NCCL_IB_BLACKOUT_LANE_IB, ncclNIbDevs);
               ncclNIbDevs++;
               nPorts++;
             }
@@ -2478,6 +2480,7 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
       reqs[r]->pInfo[0].nEventHandles++;
     }
 #endif
+    ncclIbBlackoutLaneWait(NCCL_IB_BLACKOUT_LANE_IB, comm->devs[qp->devIndex].base.ibDevN);
     ret = wrap_ibv_post_send(qp->qp, comm->wrs, &bad_wr);
     if (ret != ncclSuccess) {
       // Mark connection as fatal. DO NOT free requests here - the caller
@@ -2698,6 +2701,7 @@ ncclResult_t ncclIbPostFifo(struct ncclIbRecvComm* comm, int n, void** data, siz
   }
 
   struct ibv_send_wr* bad_wr;
+  ncclIbBlackoutLaneWait(NCCL_IB_BLACKOUT_LANE_IB, comm->devs[ctsQp->devIndex].base.ibDevN);
   ncclResult_t ret = wrap_ibv_post_send(ctsQp->qp, &wr, &bad_wr);
   if (ret != ncclSuccess) {
     // Mark connection as fatal. Don't free request here - caller owns it
@@ -2772,6 +2776,7 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, size_t* sizes, int*
       req->pInfo[r].nEventHandles++;
     }
 #endif
+    ncclIbBlackoutLaneWait(NCCL_IB_BLACKOUT_LANE_IB, comm->devs[qp->devIndex].base.ibDevN);
     NCCLCHECKGOTO(wrap_ibv_post_recv(qp->qp, &wr, &bad_wr), ret, fail);
     comm->base.qpIndex = (comm->base.qpIndex+1)%comm->base.nqps;
   }
@@ -2843,6 +2848,7 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
       wr.opcode = IBV_WR_RDMA_WRITE;
       wr.send_flags = 0;
       struct ibv_send_wr* bad_wr;
+      ncclIbBlackoutLaneWait(NCCL_IB_BLACKOUT_LANE_IB, comm->devs[i].base.ibDevN);
       NCCLCHECKGOTO(wrap_ibv_post_send(comm->devs[i].gpuFlush.qp.qp, &wr, &bad_wr), ret, fail);
     }
     memset(&wr, 0, sizeof(wr));
@@ -2861,6 +2867,7 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
 
     TIME_START(4);
     struct ibv_send_wr* bad_wr;
+    ncclIbBlackoutLaneWait(NCCL_IB_BLACKOUT_LANE_IB, comm->devs[i].base.ibDevN);
     NCCLCHECKGOTO(wrap_ibv_post_send(comm->devs[i].gpuFlush.qp.qp, &wr, &bad_wr), ret, fail);
     TIME_STOP(4);
 
@@ -2954,6 +2961,7 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
       TIME_START(3);
       // If we expect any completions from this device's CQ
       if (r->events[i]) {
+        ncclIbBlackoutLaneWait(NCCL_IB_BLACKOUT_LANE_IB, r->devBases[i]->ibDevN);
         ret = wrap_ibv_poll_cq(r->devBases[i]->cq, 4, wcs, &wrDone);
         if (ret != ncclSuccess) {
           failDevIdx = i;
@@ -3119,6 +3127,7 @@ ncclResult_t ncclIbCloseListen(void* listenComm) {
 
 ncclResult_t ncclIbFinalize(void* ctx) {
   netRefCount--;
+  if (netRefCount == 0) ncclIbBlackoutLaneStop(NCCL_IB_BLACKOUT_LANE_IB);
   return ncclSuccess;
 }
 
