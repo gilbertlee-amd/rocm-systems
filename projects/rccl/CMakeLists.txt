@@ -596,6 +596,12 @@ configure_file(src/nccl.h.in ${PROJECT_BINARY_DIR}/include/nccl.h)      # Used b
 #==================================================================================================
 add_subdirectory(src)
 
+option(BUILD_MPI_BLACKOUT_HIST "Build mpi_blackout_hist (MPI+RCCL per-iteration timing / histogram tool)" OFF)
+if(BUILD_MPI_BLACKOUT_HIST)
+  find_package(MPI MODULE REQUIRED COMPONENTS CXX)
+  add_subdirectory(tools/mpi-blackout-hist)
+endif()
+
 ## Setup librccl.so version
 rocm_set_soversion(rccl "1.0")
 
