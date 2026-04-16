@@ -157,14 +157,11 @@ static void printHistogram(const std::vector<double>& ms, int maxHistRows, bool 
     sparse[k]++;
   }
 
-  printf("\n--- Histogram: fixed bin width %.2g ms (global grid); density = count/(N*%.2g) [1/ms] ---\n",
-         kBinWidthMs, kBinWidthMs);
-  printf("bin_lo_ms bin_hi_ms count density rel_bar\n");
+  printf("\n--- Histogram: fixed bin width %.2f ms (global grid) ---\n", kBinWidthMs);
+  /* Fixed widths: 12 chars + 12 chars + 12 chars + " |" so bars start at column 39 (1-based). */
+  printf("%12s %12s %12s |\n", "bin_lo_ms", "bin_hi_ms", "count");
 
   const unsigned long long kDenseMax = 500000ULL;
-  double maxDensity = 0.0;
-
-  auto density = [&](int c) { return (double)c / ((double)n * kBinWidthMs); };
 
   if (span <= kDenseMax) {
     std::vector<int> hist((size_t)span, 0);
@@ -172,8 +169,8 @@ static void printHistogram(const std::vector<double>& ms, int maxHistRows, bool 
       if (kv.first < kMin || kv.first > kMax) continue;
       hist[(size_t)(kv.first - kMin)] = kv.second;
     }
-    for (size_t i = 0; i < hist.size(); i++) maxDensity = std::max(maxDensity, density(hist[i]));
-    if (maxDensity <= 0.0) maxDensity = 1.0;
+    int maxCount = 1;
+    for (size_t i = 0; i < hist.size(); i++) maxCount = std::max(maxCount, hist[i]);
 
     const int barW = 50;
     if ((long long)span > maxHistRows) {
@@ -185,19 +182,19 @@ static void printHistogram(const std::vector<double>& ms, int maxHistRows, bool 
       int c = hist[(size_t)(k - kMin)];
       double lo = (double)k * kBinWidthMs;
       double hi = (double)(k + 1) * kBinWidthMs;
-      double den = density(c);
-      int len = (int)std::llround(den / maxDensity * (double)barW);
-      printf("%.4f %.4f %d %.6g |", lo, hi, c, den);
+      int len = (int)std::llround((double)c / (double)maxCount * (double)barW);
+      printf("%12.2f %12.2f %12d |", lo, hi, c);
       for (int j = 0; j < len; j++) putchar('*');
       putchar('\n');
-      if ((long long)span > maxHistRows && (k - kMin + 1) % maxHistRows == 0 && k < kMax) printf("--- chunk break ---\n");
+      if ((long long)span > maxHistRows && (k - kMin + 1) % maxHistRows == 0 && k < kMax)
+        printf("%-40s|\n", "--- chunk break ---");
     }
   } else {
     fprintf(stderr,
             "[mpi_blackout_hist] Span %llu bins (> %llu); printing **non-zero** bins only (same 0.01 ms grid).\n",
             (unsigned long long)span, kDenseMax);
-    for (const auto& kv : sparse) maxDensity = std::max(maxDensity, density(kv.second));
-    if (maxDensity <= 0.0) maxDensity = 1.0;
+    int maxCount = 1;
+    for (const auto& kv : sparse) maxCount = std::max(maxCount, kv.second);
     const int barW = 50;
     int row = 0;
     for (const auto& kv : sparse) {
@@ -205,9 +202,8 @@ static void printHistogram(const std::vector<double>& ms, int maxHistRows, bool 
       int c = kv.second;
       double lo = (double)k * kBinWidthMs;
       double hi = (double)(k + 1) * kBinWidthMs;
-      double den = density(c);
-      int len = (int)std::llround(den / maxDensity * (double)barW);
-      printf("%.4f %.4f %d %.6g |", lo, hi, c, den);
+      int len = (int)std::llround((double)c / (double)maxCount * (double)barW);
+      printf("%12.2f %12.2f %12d |", lo, hi, c);
       for (int j = 0; j < len; j++) putchar('*');
       putchar('\n');
       if (++row >= maxHistRows) {
