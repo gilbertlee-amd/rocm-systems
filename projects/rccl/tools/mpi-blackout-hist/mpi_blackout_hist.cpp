@@ -56,21 +56,26 @@ enum class CollOp { AllReduce, AllGather, AllToAll };
 static void printUsage(const char* prog) {
   fprintf(stderr,
           "Usage: mpirun ... %s [options]\n"
-          "  -o <op>        Collective: allreduce | allgather | alltoall (default allreduce)\n"
-          "  -n <iters>     Timed iterations per rank (default 2000)\n"
+          "  -o <op>        Collective: allreduce | allgather | alltoall (default alltoall)\n"
+          "  -n <iters>     Timed iterations per rank when -T is not set (default 2000)\n"
+          "  -T <sec>       Run timed iterations until max elapsed wall time (MPI_Wtime) across\n"
+          "                 ranks is at least <sec> seconds (stops all ranks together). When set,\n"
+          "                 -n is ignored for the timed phase.\n"
+          "  --time <sec>   Same as -T\n"
           "  -w <iters>     Warmup iterations (default 50)\n"
           "  -e <count>     Element count (float) per op:\n"
           "                   AllReduce: count on each rank\n"
           "                   AllGather: sendcount per rank (recv = count * nranks)\n"
           "                   AllToAll:  count to each peer (buffers = count * nranks)\n"
-          "                 (default 1048576)\n"
+          "                 (default 33554432: 128 MiB floats per AllReduce send or AllGather send;\n"
+          "                  AllToAll send buffer is count*nranks floats)\n"
           "  -b <bins>      Histogram bins on rank 0 (default 40)\n"
           "  --csv          Print one sample per line (ms) on rank 0 after histogram\n"
           "  -h             Help\n"
           "\nExample with blackout:\n"
           "  RCCL_IB_BLACKOUT_ENABLE=1 RCCL_IB_BLACKOUT_MEAN_INTERVAL_MS=200 \\\n"
           "  RCCL_IB_BLACKOUT_DURATION_MS=4 RCCL_IB_BLACKOUT_SEED=42 \\\n"
-          "  mpirun -np 8 %s -o allreduce -n 5000 -e 262144\n",
+          "  mpirun -np 8 %s -T 120 -e 262144\n",
           prog, prog);
 }
 
@@ -92,7 +97,7 @@ static void runCollective(CollOp op, float* send, float* recv, size_t count, ncc
     NCCLCHK(ncclAllGather(send, recv, count, ncclFloat, comm, stream));
     break;
   case CollOp::AllToAll:
-    NCCLCHK(ncclAllToAll(send, recv, count, ncclFloat, comm, stream));
+    NCCLCHK(ncclAlltoAll(send, recv, count, ncclFloat, comm, stream));
     break;
   }
 }
@@ -170,10 +175,12 @@ int main(int argc, char** argv) {
   MPI_Comm_rank(MPI_COMM_WORLD, &mpiRank);
   MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
 
-  CollOp coll = CollOp::AllReduce;
+  CollOp coll = CollOp::AllToAll;
   int timedIters = 2000;
+  double minTimedSec = 0.0;
   int warmup = 50;
-  size_t count = 1048576;
+  /* Default: 128 MiB as float32 (128*1024*1024 / 4) for AllReduce send; AllGather/AllToAll use same -e semantics. */
+  size_t count = (size_t)128 * 1024 * 1024 / sizeof(float);
   int histBins = 40;
   bool csvDump = false;
 
@@ -186,6 +193,8 @@ int main(int argc, char** argv) {
       coll = parseOp(argv[++i]);
     } else if (!strcmp(argv[i], "-n") && i + 1 < argc) {
       timedIters = atoi(argv[++i]);
+    } else if ((!strcmp(argv[i], "-T") || !strcmp(argv[i], "--time")) && i + 1 < argc) {
+      minTimedSec = strtod(argv[++i], nullptr);
     } else if (!strcmp(argv[i], "-w") && i + 1 < argc) {
       warmup = atoi(argv[++i]);
     } else if (!strcmp(argv[i], "-e") && i + 1 < argc) {
@@ -201,8 +210,17 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (timedIters < 1 || warmup < 0 || count < 1) {
-    fprintf(stderr, "Invalid -n, -w, or -e\n");
+  if (warmup < 0 || count < 1) {
+    fprintf(stderr, "Invalid -w or -e\n");
+    MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+  const bool useTimeLimit = (minTimedSec > 0.0);
+  if (!useTimeLimit && timedIters < 1) {
+    fprintf(stderr, "Invalid -n (need >= 1 when -T is not set)\n");
+    MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+  if (useTimeLimit && !std::isfinite(minTimedSec)) {
+    fprintf(stderr, "Invalid -T / --time (need finite positive seconds)\n");
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
 
@@ -240,15 +258,35 @@ int main(int argc, char** argv) {
   HIPCHK(hipStreamSynchronize(stream));
 
   std::vector<double> localMs;
-  localMs.reserve((size_t)timedIters);
-  for (int i = 0; i < timedIters; i++) {
-    HIPCHK(hipStreamSynchronize(stream));
-    auto t0 = clock::now();
-    runCollective(coll, send, recv, count, comm, stream);
-    HIPCHK(hipStreamSynchronize(stream));
-    auto t1 = clock::now();
-    std::chrono::duration<double, std::milli> dt = t1 - t0;
-    localMs.push_back(dt.count());
+  localMs.reserve(useTimeLimit ? 65536 : (size_t)timedIters);
+
+  if (useTimeLimit) {
+    MPI_Barrier(MPI_COMM_WORLD);
+    const double tPhase0 = MPI_Wtime();
+    while (true) {
+      HIPCHK(hipStreamSynchronize(stream));
+      auto t0 = clock::now();
+      runCollective(coll, send, recv, count, comm, stream);
+      HIPCHK(hipStreamSynchronize(stream));
+      auto t1 = clock::now();
+      std::chrono::duration<double, std::milli> dt = t1 - t0;
+      localMs.push_back(dt.count());
+
+      const double localElapsed = MPI_Wtime() - tPhase0;
+      double maxElapsed = 0.0;
+      MPI_Allreduce(&localElapsed, &maxElapsed, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+      if (maxElapsed >= minTimedSec) break;
+    }
+  } else {
+    for (int i = 0; i < timedIters; i++) {
+      HIPCHK(hipStreamSynchronize(stream));
+      auto t0 = clock::now();
+      runCollective(coll, send, recv, count, comm, stream);
+      HIPCHK(hipStreamSynchronize(stream));
+      auto t1 = clock::now();
+      std::chrono::duration<double, std::milli> dt = t1 - t0;
+      localMs.push_back(dt.count());
+    }
   }
 
   HIPCHK(hipFree(send));
@@ -256,7 +294,7 @@ int main(int argc, char** argv) {
   HIPCHK(hipStreamDestroy(stream));
   NCCLCHK(ncclCommDestroy(comm));
 
-  int myN = timedIters;
+  int myN = (int)localMs.size();
   std::vector<int> recvCounts;
   if (mpiRank == 0) recvCounts.resize((size_t)mpiSize);
   MPI_Gather(&myN, 1, MPI_INT, mpiRank == 0 ? recvCounts.data() : nullptr, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -273,8 +311,13 @@ int main(int argc, char** argv) {
                 MPI_COMM_WORLD);
 
     const char* opStr = (coll == CollOp::AllReduce) ? "AllReduce" : (coll == CollOp::AllGather) ? "AllGather" : "AllToAll";
-    printf("mpi_blackout_hist: ranks=%d  op=%s  float_count=%zu  timed_iters/rank=%d  warmup=%d  (rank0 local GPU %d)\n",
-           mpiSize, opStr, count, timedIters, warmup, lr);
+    if (useTimeLimit) {
+      printf("mpi_blackout_hist: ranks=%d  op=%s  float_count=%zu  timed_phase>= %.6g s (iters/rank=%d)  warmup=%d  (rank0 local GPU %d)\n",
+             mpiSize, opStr, count, minTimedSec, myN, warmup, lr);
+    } else {
+      printf("mpi_blackout_hist: ranks=%d  op=%s  float_count=%zu  timed_iters/rank=%d  warmup=%d  (rank0 local GPU %d)\n",
+             mpiSize, opStr, count, timedIters, warmup, lr);
+    }
     printHistogram(allMs, histBins, csvDump);
   } else {
     MPI_Gatherv(localMs.data(), myN, MPI_DOUBLE, nullptr, nullptr, nullptr, MPI_DOUBLE, 0, MPI_COMM_WORLD);
